@@ -34,10 +34,38 @@ func (s *Server) Listen() {
 	}
 }
 
-func (s *Server) process(conn net.Conn) {
+type result struct {
+	v []byte
+	e error
+}
+
+func reply(conn net.Conn, resultChan chan chan *result) {
 	defer conn.Close()
 
+	for {
+		// 收到一个 channel
+		c, open := <-resultChan
+		if !open {
+			return
+		}
+
+		r := <-c // 等待缓存操作的结果
+		e := sendResponse(r.v, r.e, conn)
+		if e != nil {
+			log.Println("close connection due to error:", e)
+			return
+		}
+	}
+}
+
+func (s *Server) process(conn net.Conn) {
 	r := bufio.NewReader(conn)
+
+	resultChan := make(chan chan *result, 5000)
+	defer close(resultChan)
+
+	go reply(conn, resultChan)
+
 	for { // for 循环的目的就是当一切都没出错的话, 不用退出(当然也不用关闭 conn), 继续等待下一次的操作
 		op, err := r.ReadByte() // 阻塞式等待
 		if err != nil {
@@ -46,60 +74,69 @@ func (s *Server) process(conn net.Conn) {
 				log.Println("close connection due to error:", err)
 				return
 			}
-			// 读完了(实际上应该是什么都没读到), 就直接返回(这是退出条件)
+			// 读完了(实际上应该是什么都没读到, 原因时客户端退出了), 就直接返回(这是退出条件)
 			return
 		}
 
 		// 后续处理也有可能出错
 		if op == 'S' {
-			err = s.set(conn, r)
+			s.set(resultChan, r)
 		} else if op == 'G' {
-			err = s.get(conn, r)
+			s.get(resultChan, r)
 		} else if op == 'D' {
-			err = s.del(conn, r)
+			s.del(resultChan, r)
 		} else {
 			// 后续处理本身也有可能出错
-			log.Println("close connection due to invalid operation:", err)
+			log.Println("close connection due to invalid operation:", op)
 			return
 		}
-
-		// 出错就直接返回
-		if err != nil {
-			log.Println("close connection due to error:", err)
-			return
-		}
-
-		// 就是说只要有无效操作就直接断开当前客户端与服务器的连接并返回
-		// 读完了就直接返回
 	}
 }
 
-func (s *Server) set(conn net.Conn, r *bufio.Reader) error {
+func (s *Server) set(resultChan chan chan *result, r *bufio.Reader) {
+	c := make(chan *result)
+	resultChan <- c
+
 	k, v, e := s.readKeyAndValue(r)
 	if e != nil {
-		return e
+		c <- &result{v: nil, e: e}
+		return
 	}
 
-	return sendResponse(nil, s.c.Set(k, v), conn)
+	go func() {
+		c <- &result{v: nil, e: s.c.Set(k, v)}
+	}()
 }
 
-func (s *Server) get(conn net.Conn, r *bufio.Reader) error {
+func (s *Server) get(resultChan chan chan *result, r *bufio.Reader) {
+	c := make(chan *result)
+	resultChan <- c
+
 	k, e := s.readKey(r)
 	if e != nil {
-		return e
+		c <- &result{v: nil, e: e}
+		return
 	}
 
-	v, e := s.c.Get(k)
-	return sendResponse(v, e, conn)
+	go func() {
+		v, e := s.c.Get(k)
+		c <- &result{v, e}
+	}()
 }
 
-func (s *Server) del(conn net.Conn, r *bufio.Reader) error {
+func (s *Server) del(resultChan chan chan *result, r *bufio.Reader) {
+	c := make(chan *result)
+	resultChan <- c
+
 	k, e := s.readKey(r)
 	if e != nil {
-		return e
+		c <- &result{v: nil, e: e}
+		return
 	}
 
-	return sendResponse(nil, s.c.Del(k), conn)
+	go func() {
+		c <- &result{v: nil, e: s.c.Del(k)}
+	}()
 }
 
 func sendResponse(value []byte, err error, conn net.Conn) error {
@@ -113,7 +150,7 @@ func sendResponse(value []byte, err error, conn net.Conn) error {
 
 	vlen := fmt.Sprintf("%d ", len(value))
 	// 正确的话给客户端写回 "数据长度 数据内容"
-	_, e := conn.Write(append([]byte(vlen), value...)) // string 通过 ... 这样的操作可以转成字节数组?
+	_, e := conn.Write(append([]byte(vlen), value...))
 	return e
 }
 
