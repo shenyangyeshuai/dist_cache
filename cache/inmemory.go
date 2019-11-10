@@ -51,3 +51,26 @@ func (c *inMemoryCache) Del(k string) error {
 func (c *inMemoryCache) GetStat() Stat {
 	return c.Stat
 }
+
+func (c *inMemoryCache) NewScanner() Scanner {
+	pairChan := make(chan *pair)
+	closeChan := make(chan struct{})
+
+	go func() {
+		defer close(pairChan)
+		c.mutex.RLock()
+		for k, v := range c.c {
+			c.mutex.RUnlock()
+			select {
+			case <-closeChan:
+				return
+			case pairChan <- &pair{k, v}:
+			}
+			c.mutex.RLock()
+		}
+
+		c.mutex.RUnlock()
+	}()
+
+	return &inMemoryScanner{pair{}, pairChan, closeChan}
+}

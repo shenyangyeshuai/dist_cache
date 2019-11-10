@@ -19,5 +19,6 @@ func (s *Server) Listen() {
 	http.Handle("/cache/", s.cacheHandler())
 	http.Handle("/status", s.statusHandler())
 	http.Handle("/cluster", s.clusterHandler())
+	http.Handle("/rebalance", s.rebalanceHandler())
 	http.ListenAndServe(s.node.Addr()+":12345", nil)
 }
