@@ -12,12 +12,13 @@ import (
 func main() {
 	node := flag.String("node", "127.0.0.1", "node address")
 	clus := flag.String("cluster", "", "cluster address")
+	ttl := flag.Int("ttl", 30, "cache time to live")
 	flag.Parse()
 
 	log.Println("node is", *node)
 	log.Println("cluster is", *clus)
 
-	c := cache.New("inmemory")
+	c := cache.New("inmemory", *ttl)
 	n, e := cluster.New(*node, *clus)
 	if e != nil {
 		panic(e)
